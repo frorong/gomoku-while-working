@@ -353,7 +353,7 @@ function GamePane({ storage }) {
         children: '다시하기'
       }) : null
     ] })
-  }) : null
+  }, 'result-card') : null
 
   const tone = outcome?.kind === 'win' ? 'var(--ui-success, var(--ui-accent))' : 'var(--ui-text-secondary)'
   return jsxs('div', {
@@ -379,7 +379,7 @@ function GamePane({ storage }) {
         })
       ] }),
       jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-2', children: [
-        jsx('div', { className: 'mb-2 flex items-center justify-between text-xs', children: [jsx('span', { className: 'text-(--ui-text-tertiary)', children: '작업 경과' }), jsx('span', { className: 'font-mono', children: formatTime(elapsed) })] }),
+        jsxs('div', { className: 'mb-2 flex items-center justify-between text-xs', children: [jsx('span', { className: 'text-(--ui-text-tertiary)', children: '작업 경과' }, 'elapsed-label'), jsx('span', { className: 'font-mono', children: formatTime(elapsed) }, 'elapsed-value')] }),
         jsxs('div', { style: { position: 'relative', display: 'grid', gridTemplateColumns: `repeat(${SIZE}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${SIZE}, minmax(0, 1fr))`, aspectRatio: '1', background: 'var(--ui-bg-secondary)', borderRadius: 4, overflow: 'hidden', isolation: 'isolate' }, children: [
           jsx('div', { 'aria-hidden': true, style: { position: 'absolute', inset: 0, zIndex: 0, display: 'grid', gridTemplateColumns: `repeat(${SIZE}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${SIZE}, minmax(0, 1fr))`, pointerEvents: 'none' }, children: lineNodes }),
           ...cells,
