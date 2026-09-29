@@ -372,9 +372,9 @@ function GamePane({ storage }) {
           'aria-label': '오목 난이도', value: difficulty, onChange: changeDifficulty,
           className: 'rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 py-1 text-(--ui-text-primary)',
           children: [
-            jsx('option', { key: 'easy', value: 'easy', children: '쉬움' }),
-            jsx('option', { key: 'normal', value: 'normal', children: '보통' }),
-            jsx('option', { key: 'hard', value: 'hard', children: '어려움' })
+            jsx('option', { value: 'easy', children: '쉬움' }, 'easy'),
+            jsx('option', { value: 'normal', children: '보통' }, 'normal'),
+            jsx('option', { value: 'hard', children: '어려움' }, 'hard')
           ]
         })
       ] }),
