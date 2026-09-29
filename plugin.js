@@ -82,6 +82,52 @@ function latticeLineTracks(size) {
   }))
 }
 
+const PANE_ID = `${ID}:gomoku-game-pane-v2`
+const STATS_KEY = 'local.record.v1'
+const EMPTY_STATS = { wins: 0, losses: 0, draws: 0 }
+
+function normalizeStats(value) {
+  return {
+    wins: Number.isSafeInteger(value?.wins) && value.wins >= 0 ? value.wins : 0,
+    losses: Number.isSafeInteger(value?.losses) && value.losses >= 0 ? value.losses : 0,
+    draws: Number.isSafeInteger(value?.draws) && value.draws >= 0 ? value.draws : 0
+  }
+}
+
+function recordResult(stats, kind) {
+  if (!['win', 'loss', 'draw'].includes(kind)) return stats
+  const next = normalizeStats(stats)
+  if (kind === 'win') next.wins++
+  if (kind === 'loss') next.losses++
+  if (kind === 'draw') next.draws++
+  return next
+}
+
+function winRate(stats) {
+  const { wins, losses } = normalizeStats(stats)
+  const decidedGames = wins + losses
+  return decidedGames ? Math.round((wins / decidedGames) * 100) : 0
+}
+
+function formatRecord(stats) {
+  const { wins, losses, draws } = normalizeStats(stats)
+  return `전적 ${wins}승 ${losses}패 ${draws}무 · 승률 ${winRate(stats)}%`
+}
+
+function createPaneLifecycleHandler(paneHost, paneId, initiallyBusy = false) {
+  let wasBusy = Boolean(initiallyBusy)
+  return isBusy => {
+    if (isBusy) {
+      wasBusy = true
+      paneHost.revealPane(paneId)
+    } else if (wasBusy) {
+      wasBusy = false
+      if (typeof paneHost.dismissPane === 'function') paneHost.dismissPane(paneId)
+      else paneHost.notify?.({ kind: 'warning', message: '이 Hermes 버전에선 오목 창 자동 닫기를 지원하지 않아.' })
+    }
+  }
+}
+
 function scorePosition(board, player) {
   let total = 0
   for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) {
@@ -126,21 +172,45 @@ function formatTime(seconds) {
   return `${m}:${s}`
 }
 
-function GamePane() {
+function GamePane({ storage }) {
   const busy = useValue(host.state.busy)
   const sessionId = useValue(host.state.focusedSessionId)
   const [board, setBoard] = useState(emptyBoard)
   const [outcome, setOutcome] = useState(null)
   const [thinking, setThinking] = useState(false)
   const [elapsed, setElapsed] = useState(0)
+  const [stats, setStats] = useState(() => normalizeStats(storage.get(STATS_KEY, EMPTY_STATS)))
   const startedAt = useRef(null)
   const lastTurn = useRef(null)
   const botTimer = useRef(null)
+  const gameId = useRef(0)
+  const recordedGameId = useRef(null)
+  const statsRef = useRef(stats)
+
+  const finishGame = result => {
+    setOutcome(result)
+    if (!['win', 'loss', 'draw'].includes(result.kind) || recordedGameId.current === gameId.current) return
+    const nextStats = recordResult(statsRef.current, result.kind)
+    statsRef.current = nextStats
+    recordedGameId.current = gameId.current
+    setStats(nextStats)
+    storage.set(STATS_KEY, nextStats)
+  }
+
+  const restartGame = () => {
+    if (!busy || outcome?.kind !== 'loss') return
+    clearTimeout(botTimer.current)
+    gameId.current++
+    setBoard(emptyBoard())
+    setOutcome(null)
+    setThinking(false)
+  }
 
   useEffect(() => {
     const turnKey = busy ? (sessionId || 'focused-session') : null
     if (turnKey && turnKey !== lastTurn.current) {
       clearTimeout(botTimer.current)
+      gameId.current++
       startedAt.current = Date.now()
       setBoard(emptyBoard())
       setOutcome(null)
@@ -171,8 +241,8 @@ function GamePane() {
     const next = board.map(row => row.slice())
     next[y][x] = 1
     setBoard(next)
-    if (isWin(next, x, y, 1)) { setOutcome({ kind: 'win', text: '이겼어. 이번 작업 중 승리!' }); return }
-    if (next.every(row => row.every(Boolean))) { setOutcome({ kind: 'draw', text: '무승부야.' }); return }
+    if (isWin(next, x, y, 1)) { finishGame({ kind: 'win', text: '이겼어. 이번 작업 중 승리!' }); return }
+    if (next.every(row => row.every(Boolean))) { finishGame({ kind: 'draw', text: '무승부야.' }); return }
     setThinking(true)
     botTimer.current = setTimeout(() => {
       const move = chooseBotMove(next)
@@ -180,8 +250,8 @@ function GamePane() {
       afterBot[move[1]][move[0]] = 2
       setBoard(afterBot)
       setThinking(false)
-      if (isWin(afterBot, move[0], move[1], 2)) setOutcome({ kind: 'loss', text: '봇이 이겼어. 에이전트는 아직 작업 중이야.' })
-      else if (afterBot.every(row => row.every(Boolean))) setOutcome({ kind: 'draw', text: '무승부야.' })
+      if (isWin(afterBot, move[0], move[1], 2)) finishGame({ kind: 'loss', text: '봇이 이겼어. 에이전트는 아직 작업 중이야.' })
+      else if (afterBot.every(row => row.every(Boolean))) finishGame({ kind: 'draw', text: '무승부야.' })
     }, 180)
   }
 
@@ -239,7 +309,12 @@ function GamePane() {
       }),
       jsx('div', { className: 'mt-1 text-xs text-(--ui-text-secondary)', children:
         outcome.kind === 'expired' ? `5목 완성 전 종료 · ${outcome.detail}` : outcome.text
-      })
+      }),
+      outcome.kind === 'loss' && busy ? jsx('button', {
+        type: 'button', onClick: restartGame,
+        className: 'mt-3 rounded border border-(--ui-stroke-secondary) px-3 py-1 text-xs hover:bg-(--ui-bg-secondary)',
+        children: '다시하기'
+      }) : null
     ] })
   }) : null
 
@@ -249,7 +324,10 @@ function GamePane() {
     children: [
       jsxs('div', { className: 'flex items-start justify-between gap-2', children: [
         jsxs('div', { children: [jsx('div', { className: 'font-semibold', children: '작업 중 오목' }), jsx('div', { className: 'text-xs text-(--ui-text-tertiary)', children: '너 대 로컬 게임 봇 · 15×15' })] }),
-        jsx('span', { className: 'shrink-0 rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 font-mono text-[10px]', children: outcome ? 'DONE' : busy ? 'PLAY' : 'LOCKED' })
+        jsxs('div', { className: 'flex shrink-0 flex-col items-end gap-1', children: [
+          jsx('span', { className: 'text-right text-[10px] text-(--ui-text-tertiary)', children: formatRecord(stats) }),
+          jsx('span', { className: 'rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 font-mono text-[10px]', children: outcome ? 'DONE' : busy ? 'PLAY' : 'LOCKED' })
+        ] })
       ] }),
       jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-2', children: [
         jsx('div', { className: 'mb-2 flex items-center justify-between text-xs', children: [jsx('span', { className: 'text-(--ui-text-tertiary)', children: '작업 경과' }), jsx('span', { className: 'font-mono', children: formatTime(elapsed) })] }),
@@ -260,7 +338,7 @@ function GamePane() {
         ] })
       ] }),
       jsxs('div', { className: 'flex items-center justify-between gap-2 text-xs', children: [jsx('span', { style: { color: tone }, children: status }), jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: '● 너  ○ 봇' })] }),
-      jsx('div', { className: 'mt-auto border-t border-(--ui-stroke-secondary) pt-2 text-[11px] text-(--ui-text-tertiary)', children: busy ? '에이전트 작업이 끝나면 판이 자동으로 잠겨.' : '게임은 포커스된 대화가 작업 중일 때만 가능해.' })
+      jsx('div', { className: 'mt-auto border-t border-(--ui-stroke-secondary) pt-2 text-[11px] text-(--ui-text-tertiary)', children: '전적은 이 기기에 저장돼. 승률은 무승부를 제외한 승·패 기준이야.' })
     ]
   })
 }
@@ -274,14 +352,12 @@ export default {
       area: 'panes',
       title: '작업 중 오목',
       data: { placement: 'main', uncloseable: true, dock: { pane: 'workspace', pos: 'center', enforce: true } },
-      render: () => jsx(GamePane, {})
+      render: () => jsx(GamePane, { storage: ctx.storage })
     })
     const busy = host.state.busy
-    const revealWhenBusy = isBusy => {
-      if (isBusy) host.revealPane(`${ID}:gomoku-game-pane-v2`)
-    }
-    const unsubscribe = busy.listen(revealWhenBusy)
+    const syncPane = createPaneLifecycleHandler(host, PANE_ID, busy.get())
+    const unsubscribe = busy.listen(syncPane)
     ctx.onDispose(unsubscribe)
-    revealWhenBusy(busy.get())
+    syncPane(busy.get())
   }
 }
