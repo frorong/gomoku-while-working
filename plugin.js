@@ -47,30 +47,55 @@ function evaluate(board, x, y, player) {
   return total
 }
 
-function chooseBotMove(board) {
-  let best = -Infinity
-  let choice = null
+function candidateMoves(board) {
   const hasStone = board.some(row => row.some(Boolean))
+  if (!hasStone) return [[7, 7]]
+  const moves = []
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
       if (board[y][x]) continue
-      if (hasStone) {
-        let nearby = false
-        for (let yy = Math.max(0, y - 2); yy <= Math.min(SIZE - 1, y + 2) && !nearby; yy++) {
-          for (let xx = Math.max(0, x - 2); xx <= Math.min(SIZE - 1, x + 2); xx++) {
-            if (board[yy][xx]) { nearby = true; break }
-          }
+      let nearby = false
+      for (let yy = Math.max(0, y - 2); yy <= Math.min(SIZE - 1, y + 2) && !nearby; yy++) {
+        for (let xx = Math.max(0, x - 2); xx <= Math.min(SIZE - 1, x + 2); xx++) {
+          if (board[yy][xx]) { nearby = true; break }
         }
-        if (!nearby) continue
       }
-      board[y][x] = 2
-      const attack = evaluate(board, x, y, 2)
-      board[y][x] = 1
-      const defense = evaluate(board, x, y, 1)
-      board[y][x] = 0
-      const score = attack * 1.08 + defense + (7 - Math.abs(7 - x) + 7 - Math.abs(7 - y)) * 0.2 + Math.random() * 0.01
-      if (score > best) { best = score; choice = [x, y] }
+      if (nearby) moves.push([x, y])
     }
+  }
+  return moves
+}
+
+function chooseBotMove(board, difficulty = 'easy', random = Math.random) {
+  const moves = candidateMoves(board)
+  if (!moves.length) return [7, 7]
+  if (difficulty === 'easy') return moves[Math.floor(random() * moves.length)]
+
+  if (difficulty === 'hard') {
+    for (const [x, y] of moves) {
+      board[y][x] = 2
+      const winsNow = isWin(board, x, y, 2)
+      board[y][x] = 0
+      if (winsNow) return [x, y]
+    }
+    for (const [x, y] of moves) {
+      board[y][x] = 1
+      const blocksWin = isWin(board, x, y, 1)
+      board[y][x] = 0
+      if (blocksWin) return [x, y]
+    }
+  }
+
+  let best = -Infinity
+  let choice = null
+  for (const [x, y] of moves) {
+    board[y][x] = 2
+    const attack = evaluate(board, x, y, 2)
+    board[y][x] = 1
+    const defense = evaluate(board, x, y, 1)
+    board[y][x] = 0
+    const score = attack * 1.08 + defense + (7 - Math.abs(7 - x) + 7 - Math.abs(7 - y)) * 0.2 + random() * 0.01
+    if (score > best) { best = score; choice = [x, y] }
   }
   return choice || [7, 7]
 }
@@ -84,7 +109,12 @@ function latticeLineTracks(size) {
 
 const PANE_ID = `${ID}:gomoku-game-pane-v2`
 const STATS_KEY = 'local.record.v1'
+const DIFFICULTY_KEY = 'local.difficulty.v1'
 const EMPTY_STATS = { wins: 0, losses: 0, draws: 0 }
+
+function normalizeDifficulty(value) {
+  return ['easy', 'normal', 'hard'].includes(value) ? value : 'easy'
+}
 
 function normalizeStats(value) {
   return {
@@ -180,6 +210,7 @@ function GamePane({ storage }) {
   const [thinking, setThinking] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [stats, setStats] = useState(() => normalizeStats(storage.get(STATS_KEY, EMPTY_STATS)))
+  const [difficulty, setDifficulty] = useState(() => normalizeDifficulty(storage.get(DIFFICULTY_KEY, 'easy')))
   const startedAt = useRef(null)
   const lastTurn = useRef(null)
   const botTimer = useRef(null)
@@ -204,6 +235,12 @@ function GamePane({ storage }) {
     setBoard(emptyBoard())
     setOutcome(null)
     setThinking(false)
+  }
+
+  const changeDifficulty = event => {
+    const nextDifficulty = normalizeDifficulty(event.target.value)
+    setDifficulty(nextDifficulty)
+    storage.set(DIFFICULTY_KEY, nextDifficulty)
   }
 
   useEffect(() => {
@@ -245,7 +282,7 @@ function GamePane({ storage }) {
     if (next.every(row => row.every(Boolean))) { finishGame({ kind: 'draw', text: '무승부야.' }); return }
     setThinking(true)
     botTimer.current = setTimeout(() => {
-      const move = chooseBotMove(next)
+      const move = chooseBotMove(next, difficulty)
       const afterBot = next.map(row => row.slice())
       afterBot[move[1]][move[0]] = 2
       setBoard(afterBot)
@@ -280,7 +317,7 @@ function GamePane({ storage }) {
       }, `${x}-${y}`))
     }
     return nodes
-  }, [board, busy, outcome, thinking])
+  }, [board, busy, outcome, thinking, difficulty])
 
   const lineNodes = useMemo(() => latticeLineTracks(SIZE).flatMap(({ horizontalRow, verticalColumn }) => [
     jsx('span', { 'aria-hidden': true, style: {
@@ -328,6 +365,18 @@ function GamePane({ storage }) {
           jsx('span', { className: 'text-right text-[10px] text-(--ui-text-tertiary)', children: formatRecord(stats) }),
           jsx('span', { className: 'rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 font-mono text-[10px]', children: outcome ? 'DONE' : busy ? 'PLAY' : 'LOCKED' })
         ] })
+      ] }),
+      jsxs('label', { className: 'flex items-center justify-between gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-xs', children: [
+        jsx('span', { className: 'text-(--ui-text-tertiary)', children: '난이도' }),
+        jsxs('select', {
+          'aria-label': '오목 난이도', value: difficulty, onChange: changeDifficulty,
+          className: 'rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 py-1 text-(--ui-text-primary)',
+          children: [
+            jsx('option', { value: 'easy', children: '쉬움' }),
+            jsx('option', { value: 'normal', children: '보통' }),
+            jsx('option', { value: 'hard', children: '어려움' })
+          ]
+        })
       ] }),
       jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-2', children: [
         jsx('div', { className: 'mb-2 flex items-center justify-between text-xs', children: [jsx('span', { className: 'text-(--ui-text-tertiary)', children: '작업 경과' }), jsx('span', { className: 'font-mono', children: formatTime(elapsed) })] }),
