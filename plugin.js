@@ -66,25 +66,104 @@ function candidateMoves(board) {
   return moves
 }
 
-function chooseBotMove(board, difficulty = 'easy', random = Math.random) {
+function hasWinningMove(board, player) {
+  for (const [x, y] of candidateMoves(board)) {
+    board[y][x] = player
+    const winsNow = isWin(board, x, y, player)
+    board[y][x] = 0
+    if (winsNow) return true
+  }
+  return false
+}
+
+function rankedCandidateMoves(board, player, limit) {
+  const opponent = player === 1 ? 2 : 1
+  const mustBlock = hasWinningMove(board, opponent)
+  const moves = candidateMoves(board).map(([x, y]) => {
+    board[y][x] = player
+    const winsNow = isWin(board, x, y, player)
+    let blocksWin = false
+    if (mustBlock) blocksWin = !hasWinningMove(board, opponent)
+    const attack = evaluate(board, x, y, player)
+    board[y][x] = opponent
+    const defense = evaluate(board, x, y, opponent)
+    board[y][x] = 0
+    const center = (14 - Math.abs(7 - x) - Math.abs(7 - y)) * 0.2
+    const score = winsNow ? 1e9 : (blocksWin ? 5e7 : 0) + attack * 1.08 + defense + center
+    return { move: [x, y], score }
+  })
+  moves.sort((a, b) => b.score - a.score)
+  return moves.slice(0, limit).map(({ move }) => move)
+}
+
+function searchScore(board, lastMove, lastPlayer, depth, playerToMove, rootPlayer, alpha, beta, width) {
+  if (lastMove && isWin(board, lastMove[0], lastMove[1], lastPlayer)) {
+    return lastPlayer === rootPlayer ? 1e9 + depth : -1e9 - depth
+  }
+  if (depth <= 0) return scorePosition(board, rootPlayer) - scorePosition(board, rootPlayer === 1 ? 2 : 1) * 1.08
+
+  const moves = rankedCandidateMoves(board, playerToMove, width)
+  if (!moves.length) return scorePosition(board, rootPlayer) - scorePosition(board, rootPlayer === 1 ? 2 : 1) * 1.08
+  const maximizing = playerToMove === rootPlayer
+  let best = maximizing ? -Infinity : Infinity
+
+  for (const [x, y] of moves) {
+    board[y][x] = playerToMove
+    const score = searchScore(
+      board, [x, y], playerToMove, depth - 1, playerToMove === 1 ? 2 : 1,
+      rootPlayer, alpha, beta, width
+    )
+    board[y][x] = 0
+    if (maximizing) {
+      best = Math.max(best, score)
+      alpha = Math.max(alpha, best)
+    } else {
+      best = Math.min(best, score)
+      beta = Math.min(beta, best)
+    }
+    if (beta <= alpha) break
+  }
+  return best
+}
+
+function chooseSearchedMove(board, difficulty, random = Math.random) {
+  const config = difficulty === 'master' ? { depth: 3, width: 7 } : { depth: 2, width: 6 }
+  const moves = rankedCandidateMoves(board, 2, config.width)
+  let bestScore = -Infinity
+  let choice = null
+  let alpha = -Infinity
+
+  for (const [x, y] of moves) {
+    board[y][x] = 2
+    const score = searchScore(board, [x, y], 2, config.depth - 1, 1, 2, alpha, Infinity, config.width)
+    board[y][x] = 0
+    const tieBreak = random() * 0.001
+    if (score + tieBreak > bestScore) {
+      bestScore = score + tieBreak
+      choice = [x, y]
+    }
+    alpha = Math.max(alpha, score)
+  }
+  return choice || [7, 7]
+}
+
+function chooseBotMove(board, difficulty = 'hard', random = Math.random) {
   const moves = candidateMoves(board)
   if (!moves.length) return [7, 7]
-  if (difficulty === 'easy') return moves[Math.floor(random() * moves.length)]
 
-  if (difficulty === 'hard') {
-    for (const [x, y] of moves) {
-      board[y][x] = 2
-      const winsNow = isWin(board, x, y, 2)
-      board[y][x] = 0
-      if (winsNow) return [x, y]
-    }
-    for (const [x, y] of moves) {
-      board[y][x] = 1
-      const blocksWin = isWin(board, x, y, 1)
-      board[y][x] = 0
-      if (blocksWin) return [x, y]
-    }
+  for (const [x, y] of moves) {
+    board[y][x] = 2
+    const winsNow = isWin(board, x, y, 2)
+    board[y][x] = 0
+    if (winsNow) return [x, y]
   }
+  for (const [x, y] of moves) {
+    board[y][x] = 1
+    const blocksWin = isWin(board, x, y, 1)
+    board[y][x] = 0
+    if (blocksWin) return [x, y]
+  }
+  if (difficulty === 'expert' || difficulty === 'master') return chooseSearchedMove(board, difficulty, random)
 
   let best = -Infinity
   let choice = null
@@ -113,7 +192,7 @@ const DIFFICULTY_KEY = 'local.difficulty.v1'
 const EMPTY_STATS = { wins: 0, losses: 0, draws: 0 }
 
 function normalizeDifficulty(value) {
-  return ['easy', 'normal', 'hard'].includes(value) ? value : 'easy'
+  return ['hard', 'expert', 'master'].includes(value) ? value : 'hard'
 }
 
 function normalizeStats(value) {
@@ -210,7 +289,7 @@ function GamePane({ storage }) {
   const [thinking, setThinking] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [stats, setStats] = useState(() => normalizeStats(storage.get(STATS_KEY, EMPTY_STATS)))
-  const [difficulty, setDifficulty] = useState(() => normalizeDifficulty(storage.get(DIFFICULTY_KEY, 'easy')))
+  const [difficulty, setDifficulty] = useState(() => normalizeDifficulty(storage.get(DIFFICULTY_KEY, 'hard')))
   const startedAt = useRef(null)
   const lastTurn = useRef(null)
   const botTimer = useRef(null)
@@ -229,7 +308,7 @@ function GamePane({ storage }) {
   }
 
   const restartGame = () => {
-    if (!busy || outcome?.kind !== 'loss') return
+    if (!busy) return
     clearTimeout(botTimer.current)
     gameId.current++
     setBoard(emptyBoard())
@@ -346,12 +425,7 @@ function GamePane({ storage }) {
       }),
       jsx('div', { className: 'mt-1 text-xs text-(--ui-text-secondary)', children:
         outcome.kind === 'expired' ? `5목 완성 전 종료 · ${outcome.detail}` : outcome.text
-      }),
-      outcome.kind === 'loss' && busy ? jsx('button', {
-        type: 'button', onClick: restartGame,
-        className: 'mt-3 rounded border border-(--ui-stroke-secondary) px-3 py-1 text-xs hover:bg-(--ui-bg-secondary)',
-        children: '다시하기'
-      }) : null
+      })
     ] })
   }, 'result-card') : null
 
@@ -366,17 +440,25 @@ function GamePane({ storage }) {
           jsx('span', { className: 'rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 font-mono text-[10px]', children: outcome ? 'DONE' : busy ? 'PLAY' : 'LOCKED' })
         ] })
       ] }),
-      jsxs('label', { className: 'flex items-center justify-between gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-xs', children: [
-        jsx('span', { className: 'text-(--ui-text-tertiary)', children: '난이도' }),
-        jsxs('select', {
-          'aria-label': '오목 난이도', value: difficulty, onChange: changeDifficulty,
-          className: 'rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 py-1 text-(--ui-text-primary)',
-          children: [
-            jsx('option', { value: 'easy', children: '쉬움' }, 'easy'),
-            jsx('option', { value: 'normal', children: '보통' }, 'normal'),
-            jsx('option', { value: 'hard', children: '어려움' }, 'hard')
-          ]
-        })
+      jsxs('div', { className: 'flex items-center justify-between gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-xs', children: [
+        jsxs('label', { className: 'flex min-w-0 flex-1 items-center justify-between gap-2', children: [
+          jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: '난이도' }),
+          jsxs('select', {
+            'aria-label': '오목 난이도', value: difficulty, onChange: changeDifficulty,
+            className: 'min-w-0 rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) px-2 py-1 text-(--ui-text-primary)',
+            children: [
+              jsx('option', { value: 'hard', children: '어려움' }, 'hard'),
+              jsx('option', { value: 'expert', children: '매우 어려움' }, 'expert'),
+              jsx('option', { value: 'master', children: '극악' }, 'master')
+            ]
+          })
+        ] }),
+        jsx('button', {
+          type: 'button', onClick: restartGame, disabled: !busy,
+          'aria-label': '다시하기',
+          className: 'shrink-0 rounded border border-(--ui-stroke-secondary) px-2 py-1 text-(--ui-text-primary) hover:bg-(--ui-bg-secondary) disabled:cursor-not-allowed disabled:opacity-50',
+          children: '다시하기'
+        }, 'restart-game')
       ] }),
       jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-2', children: [
         jsxs('div', { className: 'mb-2 flex items-center justify-between text-xs', children: [jsx('span', { className: 'text-(--ui-text-tertiary)', children: '작업 경과' }, 'elapsed-label'), jsx('span', { className: 'font-mono', children: formatTime(elapsed) }, 'elapsed-value')] }),
